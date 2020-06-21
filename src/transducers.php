@@ -23,25 +23,35 @@ function create_reducer($arity0, $arity1, $arity2) {
 };
 
 /**
+ * Composes functions : f, g, h -> f.g.h
+ */
+function comp(...$fns) {
+    return function (...$args) use ($fns) {
+        $f = array_pop($fns); // leftward
+        $ret = call_user_func_array($f, $args);
+        while (!empty($fns)) {
+            $f = array_pop($fns);
+            $ret = $f($ret);
+        }
+
+        return $ret;
+    };
+}
+
+/**
  * Mapping transducer
  * 
  * @param callable $f : a -> b
  */
 function map(callable $f) {
     return function (callable $rf) use ($f) {
-        $arity0 = function () use ($rf) {
-            return $rf();
-        };
-
-        $arity1 = function ($result) use ($rf) {
-            return $rf($result);
-        };
-
-        $arity2 = function ($result, $input) use ($rf, $f) {
-            return $rf($result, $f($input));
-        };
-
-        return create_reducer($arity0, $arity1, $arity2);
+        return create_reducer(
+            fn() => $rf(),
+            fn($result) => $rf($result),
+            function ($result, $input) use ($rf, $f) {
+                return $rf($result, $f($input));
+            }
+        );
     };
 }
 
@@ -52,42 +62,69 @@ function map(callable $f) {
  */
 function filter(callable $pred) {
     return function (callable  $rf) use ($pred) {
-        $arity0 = function () use ($rf) {
-            return $rf();
-        };
-
-        $arity1 = function ($result) use ($rf) {
-            return $rf($result);
-        };
-
-        $arity2 = function ($result, $input) use ($rf, $pred) {
-            print_r($result, $input);
-            return $pred($input) ? $rf($result, $input) : $result;
-        };
-
-        return create_reducer($arity0, $arity1, $arity2);
+        return create_reducer(
+            fn() => $rf(),
+            fn($result) => $rf($result),
+            function ($result, $input) use ($rf, $pred) {
+                return $pred($input) ? $rf($result, $input) : $result;
+            }
+        );
     };
+}
+
+/**
+ * Remove consecutive not-null duplicates in collection.
+ */
+function dedupe() {
+    return function (callable $rf) {
+        $pv = null;
+        return create_reducer(
+            fn() => $rf(),
+            fn($result) => $rf($result),
+            function ($result, $input) use ($rf, &$pv) {
+                $prior = $pv;
+                $pv = $input;
+                return $prior === $input ? $result : $rf($result, $input);
+            }
+        );
+    };
+}
+
+/**
+ * Flattening transducer
+*/
+function cat() {
+    return function (callable $rf) {
+        return create_reducer(
+            fn() => $rf(),
+            fn($result) => $rf($result),
+            fn($result, $input) => reduce($rf, $result, $input)
+        );
+    };
+}
+
+/**
+ * Transducer which applies $f to collection and then flatten them.
+ * 
+ * @param callable $f mapping function
+ */
+function mapcat(callable $f) {
+    return comp(map($f), cat());
 }
 
 function array_reducer() {
-    $arity0 = function () {
-        return [];
-    };
-
-    $arity1 = function ($result) {
-        return $result;
-    };
-
-    $arity2 = function ($result, $input) {
-        $result[] = $input;
-        return $result;
-    };
-
-    return create_reducer($arity0, $arity1, $arity2);
+    return create_reducer(
+        fn() => [],
+        fn ($result) => $result,
+        function ($result, $input) {
+            $result[] = $input;
+            return $result;
+        }
+    );
 }
 
 
-function reduce($rf, $coll, $init) {
+function reduce($rf, $init, $coll) {
     $result = $init;
     foreach ($coll as $input) {
         $result = $rf($result, $input);
@@ -95,14 +132,10 @@ function reduce($rf, $coll, $init) {
     return $result;
 }
 
-
-function transduce($xform, $f, $coll, $init = null) {
-    if ($init === null) {
-        $init = $f();
-    }
-    
+function transduce($xform, $f, $coll) {
+    $init = $f();    
     $rf = $xform($f);
-    $result = reduce($rf, $coll, $init);
+    $result = reduce($rf, $init, $coll);
     
     return $rf($result);
 }
